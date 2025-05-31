@@ -1,23 +1,48 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, HTTPException
 from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
-from fastapi.responses import Response
+from starlette.responses import Response
+import re
 
 app = FastAPI()
 
-error_counter = Counter('error_logs_total', 'Total error logs detected')
+# Metric for suspicious logs count
+SUSPICIOUS_LOGS = Counter(
+    "suspicious_log_entries_total",
+    "Total number of suspicious log entries detected"
+)
 
-@app.get("/")
-def read_root():
-    return {"message": "Welcome to LogGuardian"}
+# Define suspicious keywords or patterns
+SUSPICIOUS_PATTERNS = [
+    re.compile(r"error", re.IGNORECASE),
+    re.compile(r"failed", re.IGNORECASE),
+    re.compile(r"unauthorized", re.IGNORECASE),
+    re.compile(r"exception", re.IGNORECASE),
+    # Add more patterns as needed
+]
 
-@app.get("/metrics")
-def metrics():
-    data = generate_latest()
-    return Response(content=data, media_type=CONTENT_TYPE_LATEST)
+def is_suspicious(log_entry: str) -> bool:
+    return any(pattern.search(log_entry) for pattern in SUSPICIOUS_PATTERNS)
 
 @app.post("/log")
-def ingest_log(log: dict):
-    # Imagine log parsing here, increase error counter on condition
-    if log.get("level") == "error":
-        error_counter.inc()
-    return {"status": "log received"}
+async def receive_log(log: dict):
+    """
+    Receive a log entry as JSON with a 'message' field.
+    Example:
+    {
+      "message": "User login failed due to invalid password"
+    }
+    """
+    message = log.get("message")
+    if not message:
+        raise HTTPException(status_code=400, detail="Missing 'message' field in log")
+
+    if is_suspicious(message):
+        SUSPICIOUS_LOGS.inc()
+        # Here, you could also trigger alerts, save to DB, etc.
+
+    return {"status": "received", "suspicious": is_suspicious(message)}
+
+@app.get("/metrics")
+async def metrics():
+    data = generate_latest()
+    return Response(content=data, media_type=CONTENT_TYPE_LATEST)
